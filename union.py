@@ -33,7 +33,6 @@ def lambda_handler(event, context):
     table = dynamodb_resource.Table('DDNS')
 
     if state == 'running':
-        time.sleep(60)
         instance = compute.describe_instances(InstanceIds=[instance_id])
         # Remove response metadata from the response
         instance.pop('ResponseMetadata')
@@ -109,28 +108,7 @@ def lambda_handler(event, context):
     private_hosted_zone_collection = map(lambda x: x['Name'], private_hosted_zones)
     public_hosted_zones = filter(lambda x: x['Config']['PrivateZone'] is False, hosted_zones['HostedZones'])
     public_hosted_zones_collection = map(lambda x: x['Name'], public_hosted_zones)
-    # Check to see whether a reverse lookup zone for the instance already exists.  If it does, check to see whether
-    # the reverse lookup zone is associated with the instance's VPC.  If it isn't create the association.  You don't
-    # need to do this when you create the reverse lookup zone because the association is done automatically.
-    if filter(lambda record: record['Name'] == reversed_lookup_zone, hosted_zones['HostedZones']):
-        print 'Reverse lookup zone found:', reversed_lookup_zone
-        reverse_lookup_zone_id = get_zone_id(reversed_lookup_zone)
-        reverse_hosted_zone_properties = get_hosted_zone_properties(reverse_lookup_zone_id)
-        if vpc_id in map(lambda x: x['VPCId'], reverse_hosted_zone_properties['VPCs']):
-            print 'Reverse lookup zone %s is associated with VPC %s' % (reverse_lookup_zone_id, vpc_id)
-        else:
-            print 'Associating zone %s with VPC %s' % (reverse_lookup_zone_id, vpc_id)
-            try:
-                associate_zone(reverse_lookup_zone_id, region, vpc_id)
-            except BaseException as e:
-                print e
-    else:
-        print 'No matching reverse lookup zone'
-        # create private hosted zone for reverse lookups
-        if state == 'running':
-            create_reverse_lookup_zone(instance, reversed_domain_prefix, region)
-            reverse_lookup_zone_id = get_zone_id(reversed_lookup_zone)
-    # Wait a random amount of time.  This is a poor-mans back-off if a lot of instances are launched all at once.
+
     time.sleep(random.random())
 
     # Loop through the instance's tags, looking for the zone and cname tags.  If either of these tags exist, check
@@ -139,6 +117,7 @@ def lambda_handler(event, context):
         if 'ZONE' in tag.get('Key',{}).lstrip().upper():
             if is_valid_hostname(tag.get('Value')):
                 if tag.get('Value').lstrip().lower() in private_hosted_zone_collection:
+                    reverse_lookup_zone_id = get_reverse_lookup_zone_or_create(reversed_lookup_zone, hosted_zones, region, vpc_id)
                     print 'Private zone found:', tag.get('Value')
                     private_hosted_zone_name = tag.get('Value').lstrip().lower()
                     private_hosted_zone_id = get_zone_id(private_hosted_zone_name)
@@ -458,3 +437,28 @@ def get_hosted_zone_properties(zone_id):
     hosted_zone_properties = route53.get_hosted_zone(Id=zone_id)
     hosted_zone_properties.pop('ResponseMetadata')
     return hosted_zone_properties
+
+def get_reverse_lookup_zone_or_create(reversed_lookup_zone, hosted_zones, region, vpc_id):
+    # Check to see whether a reverse lookup zone for the instance already exists.  If it does, check to see whether
+    # the reverse lookup zone is associated with the instance's VPC.  If it isn't create the association.  You don't
+    # need to do this when you create the reverse lookup zone because the association is done automatically.
+    if filter(lambda record: record['Name'] == reversed_lookup_zone, hosted_zones['HostedZones']):
+        print 'Reverse lookup zone found:', reversed_lookup_zone
+        reverse_lookup_zone_id = get_zone_id(reversed_lookup_zone)
+        reverse_hosted_zone_properties = get_hosted_zone_properties(reverse_lookup_zone_id)
+        if vpc_id in map(lambda x: x['VPCId'], reverse_hosted_zone_properties['VPCs']):
+            print 'Reverse lookup zone %s is associated with VPC %s' % (reverse_lookup_zone_id, vpc_id)
+        else:
+            print 'Associating zone %s with VPC %s' % (reverse_lookup_zone_id, vpc_id)
+            try:
+                associate_zone(reverse_lookup_zone_id, region, vpc_id)
+            except BaseException as e:
+                print e
+    else:
+        print 'No matching reverse lookup zone'
+        # create private hosted zone for reverse lookups
+        if state == 'running':
+            create_reverse_lookup_zone(instance, reversed_domain_prefix, region)
+            reverse_lookup_zone_id = get_zone_id(reversed_lookup_zone)
+    # Wait a random amount of time.  This is a poor-mans back-off if a lot of instances are launched all at once.
+    return reverse_lookup_zone_id
